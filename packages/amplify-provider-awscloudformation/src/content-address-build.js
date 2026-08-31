@@ -116,7 +116,25 @@ function contentAddressBuild(buildDir) {
     Default: '',
     Description: 'Content fingerprint of the API build; changes iff any build artifact changed (content-addressed deploys).',
   };
-  fs.writeFileSync(rootPath, JSON.stringify(rootTemplate, null, 4));
+  const finalRootText = JSON.stringify(rootTemplate, null, 4);
+  fs.writeFileSync(rootPath, finalRootText);
+  // The root template itself must feed the fingerprint (Codex review, 2026-08-31): it is
+  // uploaded to a STABLE amplify-cfn-templates URL, so a root-template-only change (auth
+  // config from cli-inputs, CreateAPIKey, LogConfig, ...) deploys ONLY if the fingerprint
+  // parameter changes. The fingerprint value lives in parameters.json, not in the template,
+  // so hashing the final template text is not circular.
+  fileHashes.push(`cloudformation-template.json:${sha10(finalRootText)}`);
+
+  // Any build entry this pass does not understand would upload under an unhashed name and
+  // silently stop deploying on content change -- fail loudly instead of guessing.
+  const handled = new Set(['resolvers', 'pipelineFunctions', 'functions', 'stacks']);
+  const known = new Set(['cloudformation-template.json', 'parameters.json', FINGERPRINT_FILE, 'tsconfig.resource.json', ...renames.map(([, to]) => to)]);
+  for (const entry of fs.readdirSync(buildDir)) {
+    const isDir = fs.statSync(path.join(buildDir, entry)).isDirectory();
+    if ((isDir && !handled.has(entry)) || (!isDir && !known.has(entry))) {
+      throw new Error(`content-address-build: unexpected build entry '${entry}' -- extend the content-addressing pass before deploying it.`);
+    }
+  }
 
   fileHashes.sort();
   const fingerprint = `${SCHEME_VERSION}-${sha10(Buffer.from(fileHashes.join('\n')))}`;
