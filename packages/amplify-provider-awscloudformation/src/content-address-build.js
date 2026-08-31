@@ -96,9 +96,10 @@ function stageContentAddressedBuild(buildDir) {
   const statesDir = path.join(buildDir, 'states');
   if (fs.existsSync(statesDir) && fs.readdirSync(statesDir).length > 0) {
     throw new Error(
-      'content-addressed deploys do not yet support iterative GSI deployments (build/states is non-empty): ' +
-        'the iterative steps reference transformer-native file names that are not uploaded under the ' +
-        'content-addressed prefix. Split the change so each push touches at most one GSI per table.',
+      'content-addressed deploys do not support iterative GSI deployments (build/states is non-empty). ' +
+        'This should have been refused earlier in push-resources; reaching it here means an iterative plan ' +
+        'was formed anyway. Set features.graphqltransformer.enableiterativegsiupdates=false in amplify/cli.json ' +
+        'so GSI changes deploy as ordinary single updates.',
     );
   }
 

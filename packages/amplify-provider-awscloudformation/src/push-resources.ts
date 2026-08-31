@@ -244,6 +244,21 @@ export const run = async (context: $TSContext, resourceDefinition: $TSObject, re
       if (gqlResource) {
         const gqlManager = await GraphQLResourceManager.createInstance(context, gqlResource, cloudformationMeta.StackId, rebuild);
         deploymentSteps = await gqlManager.run();
+        // PATCH(content-addressed deploys): refuse an iterative deployment at the moment the
+        // plan is formed -- before temp function templates upload to S3 and before
+        // deploymentStateManager writes its in-progress state. Iterative deployment is
+        // structurally incompatible with a constant S3DeploymentRootKey: the step files upload
+        // under the constant prefix while getCloudStateFilesDirectory derives the stock
+        // hashDirectory prefix, and the final root-stack step flips the parameter back, turning
+        // every iterative push into a full-churn (~2,450-resource) operation. GSI changes
+        // deploy fine as ordinary single updates instead.
+        if (deploymentSteps.length > 0) {
+          throw new Error(
+            'content-addressed deploys do not support iterative GSI deployments. ' +
+              'Set features.graphqltransformer.enableiterativegsiupdates=false in amplify/cli.json so GSI changes ' +
+              'deploy as ordinary single updates (one GSI change per table per push, enforced at transform time).',
+          );
+        }
 
         // If any models are being replaced, we prepend steps to the iterative deployment to remove references to the replaced table in functions that have a dependency on the tables
         const modelsBeingReplaced = gqlManager.getTablesBeingReplaced().map((meta) => meta.stackName); // stackName is the same as the model name
