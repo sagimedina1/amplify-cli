@@ -66,12 +66,20 @@ const listFiles = (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) 
 // and '/'-joined segments carrying the bare quoted file name ("stacks", "CustomResources.json").
 // Safe because generated file names are long and unique and only ever appear as Fn::Join segments.
 const replaceAll = (text, from, to) => text.split(from).join(to);
-const applyRenames = (text, renames) => {
+// The bare quoted-name form is applied ONLY for stack templates: an audit of all 103 real
+// templates found exactly one bare-form reference (CustomResources via
+// Fn::Join["/", [..., "stacks", "CustomResources.json"]]) and zero for
+// resolvers/functions/schema, which always use the path form. Keeping the bare form scoped
+// to stacks minimizes the surface where a legitimate template string could collide with a
+// file basename (e.g. user-authored custom stacks).
+const applyRenames = (text, renames, { bareForm = false } = {}) => {
   for (const [from, to] of renames) {
     text = replaceAll(text, from, to); // dir/name form
-    const fromBase = from.split('/').pop();
-    const toBase = to.split('/').pop();
-    text = replaceAll(text, `"${fromBase}"`, `"${toBase}"`); // bare quoted-name form
+    if (bareForm) {
+      const fromBase = from.split('/').pop();
+      const toBase = to.split('/').pop();
+      text = replaceAll(text, `"${fromBase}"`, `"${toBase}"`); // bare quoted-name form
+    }
   }
   return text;
 };
@@ -111,7 +119,7 @@ function stageContentAddressedBuild(buildDir) {
   // deploy artifact), states (iterative machinery), the previous fingerprint marker, tsconfig.
   const stagedDir = stagedDirFor(buildDir);
   fs.rmSync(stagedDir, { recursive: true, force: true });
-  const skip = new Set(['states', 'parameters.json', FINGERPRINT_FILE, 'tsconfig.resource.json']);
+  const skip = new Set(['states', 'parameters.json', FINGERPRINT_FILE, 'tsconfig.resource.json', 'override.js']);
   fs.mkdirSync(stagedDir, { recursive: true });
   for (const entry of fs.readdirSync(buildDir)) {
     if (skip.has(entry)) continue;
@@ -160,7 +168,8 @@ function stageContentAddressedBuild(buildDir) {
   // deploys ONLY if the fingerprint parameter changes. Not circular -- the fingerprint value
   // lives in parameters.json, never in the template.
   const stagedRootPath = path.join(stagedDir, ROOT_TEMPLATE);
-  const finalRootText = applyRenames(fs.readFileSync(stagedRootPath, 'utf8'), [...renames, ...stackRenames]);
+  let rootText = applyRenames(fs.readFileSync(stagedRootPath, 'utf8'), renames);
+  const finalRootText = applyRenames(rootText, stackRenames, { bareForm: true });
   fs.writeFileSync(stagedRootPath, finalRootText);
   fileHashes.push(`${ROOT_TEMPLATE}:${sha16(finalRootText)}`);
 
