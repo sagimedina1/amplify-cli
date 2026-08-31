@@ -47,6 +47,7 @@ import Cloudformation from './aws-utils/aws-cfn';
 import { formUserAgentParam } from './aws-utils/user-agent';
 import constants, { ProviderName as providerName } from './constants';
 import { uploadAppSyncFiles } from './upload-appsync-files';
+const { getStagedRootTemplatePath } = require('./content-address-build');
 import { prePushGraphQLCodegen, postPushGraphQLCodegen } from './graphql-codegen';
 import { adminModelgen } from './admin-modelgen';
 import { prePushAuthTransform } from './auth-transform';
@@ -788,7 +789,20 @@ const updateS3Templates = async (context: $TSContext, resourcesToBeUpdated: $TSA
     const { resourceDir, cfnFiles } = getCfnFiles(category, resourceName);
     for (const cfnFile of cfnFiles) {
       await writeCustomPoliciesToCFNTemplate(resourceName, service, cfnFile, category, { minify: context.input.options?.minify });
-      const transformedCFNPath = await preProcessCFNTemplate(path.join(resourceDir, cfnFile), { minify: context.input.options?.minify });
+      // PATCH(content-addressed deploys): the AppSync root template deployed to the stable
+      // amplify-cfn-templates URL must be the STAGED (content-addressed) one -- its nested
+      // TemplateURLs reference the hashed stack names actually uploaded. build/ keeps
+      // transformer-native names for the diff/sanity machinery, so it must not be the
+      // upload source. uploadAppSyncFiles stages before this runs in the push flow.
+      let cfnSourcePath = path.join(resourceDir, cfnFile);
+      if (service === 'AppSync' && cfnFile === 'cloudformation-template.json') {
+        const stagedRoot = getStagedRootTemplatePath(resourceDir);
+        if (!fs.existsSync(stagedRoot)) {
+          throw new Error(`content-addressed deploys: staged root template missing at ${stagedRoot} -- uploadAppSyncFiles did not run before updateS3Templates.`);
+        }
+        cfnSourcePath = stagedRoot;
+      }
+      const transformedCFNPath = await preProcessCFNTemplate(cfnSourcePath, { minify: context.input.options?.minify });
 
       promises.push(uploadTemplateToS3(context, transformedCFNPath, category, resourceName, amplifyMeta));
     }

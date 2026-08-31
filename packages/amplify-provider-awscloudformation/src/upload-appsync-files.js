@@ -11,7 +11,7 @@ const { minifyAllJSONInFolderRecursively } = require('./utils/minify-json');
 const logger = fileLogger('upload-appsync-files');
 
 const ROOT_APPSYNC_S3_KEY = 'amplify-appsync-files';
-const { contentAddressBuild, readBuildFingerprint, FINGERPRINT_PARAM, SCHEME_VERSION } = require('./content-address-build');
+const { stageContentAddressedBuild, readBuildFingerprint, FINGERPRINT_PARAM, SCHEME_VERSION } = require('./content-address-build');
 const providerName = require('./constants').ProviderName;
 const { hashElement } = require('folder-hash');
 const ora = require('ora');
@@ -207,15 +207,17 @@ async function uploadAppSyncFiles(context, resourcesToUpdate, allResources, opti
     if (context.input.options?.minify) {
       minifyAllJSONInFolderRecursively(resourceBuildDir);
     }
-    // PATCH(content-addressed deploys): must run after the transform and any --minify
-    // (names hash FINAL bytes) and before parameters.json is written (the fingerprint
-    // parameter must be declared in the template for the filter to keep it).
-    const buildFingerprint = contentAddressBuild(resourceBuildDir);
-    writeUpdatedParametersJson(resource, deploymentRootKey, buildFingerprint);
+    // PATCH(content-addressed deploys): stage AFTER the transform and any --minify (names
+    // hash FINAL bytes) and before parameters.json is written (the fingerprint parameter
+    // must be declared in the build's root template for the filter below to keep it).
+    // build/ itself keeps transformer-native names so the sanity checks and the
+    // graphql-resource-manager keep diffing like-for-like against #current-cloud-backend.
+    const { stagedDir, fingerprint } = stageContentAddressedBuild(resourceBuildDir);
+    writeUpdatedParametersJson(resource, deploymentRootKey, fingerprint);
     const spinner = new ora('Uploading files.');
     spinner.start();
     await TransformPackage.uploadAPIProject({
-      directory: resourceBuildDir,
+      directory: stagedDir,
       upload: async (blob) => {
         const { Key, Body } = blob;
         const fullKey = `${deploymentRootKey}/${Key}`;
@@ -242,7 +244,12 @@ async function uploadAppSyncFiles(context, resourcesToUpdate, allResources, opti
     const { category, resourceName } = resource;
     const resourceDir = path.normalize(path.join(backEndDir, category, resourceName));
     const deploymentRootKey = await getDeploymentRootKey(resourceDir);
-    writeUpdatedParametersJson(resource, deploymentRootKey, readBuildFingerprint(path.join(resourceDir, 'build')));
+    // PATCH(content-addressed deploys): #current-cloud-backend is authoritative for the
+    // DEPLOYED fingerprint. The local build may be stale or hold a rolled-back push's
+    // output; writing its fingerprint here would flip the parameter on an unrelated
+    // non-api push and resurrect that build through the stable TemplateURL (review F3).
+    const currentApiBuild = path.join(pathManager.getCurrentCloudBackendDirPath(), category, resourceName, 'build');
+    writeUpdatedParametersJson(resource, deploymentRootKey, readBuildFingerprint(currentApiBuild));
   } else {
     // case where api is deployed already and non api resources are pushed
     // this is done to keep the nested stack same if api resource is in update state (updated gql schema)
